@@ -44,5 +44,5 @@ jobs:
         run: |
           # ⚠️ Yahan apni lambda function ka exact naam likhein (e.g. image-service-lambda ya jo bhi console par hai)
           aws lambda update-function-code \
-            --function-name my-image-service-lambda \
+            --function-name image-processor-lambda \
             --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
