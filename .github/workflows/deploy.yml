@@ -1,0 +1,48 @@
+name: Lambda CI/CD
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write   # AWS OIDC ke liye mandatory
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::233338945000:role/GitHubActionsWorkflowRole
+          aws-region: us-east-1
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Lambda Container Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: my-lambda-app
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Lambda compatible Docker image build aur push karna
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Update Lambda Function Code
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: my-lambda-app
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # ⚠️ Yahan apni lambda function ka exact naam likhein (e.g. image-service-lambda ya jo bhi console par hai)
+          aws lambda update-function-code \
+            --function-name my-image-service-lambda \
+            --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
