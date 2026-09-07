@@ -5,17 +5,17 @@ on:
     branches: [ main ]
 
 permissions:
-  id-token: write   # AWS OIDC ke liye mandatory
+  id-token: write   # required for AWS OIDC — no static keys in repo secrets
   contents: read
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials via OIDC
+      - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::233338945000:role/GitHubActionsWorkflowRole
@@ -25,24 +25,40 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Lambda Container Image
+      # Lambda supports x86_64/arm64 only — build explicitly for amd64.
+      - name: Build and push Lambda container image (linux/amd64)
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: my-lambda-app
+          ECR_REPOSITORY: image-processor-lambda
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Lambda compatible Docker image build aur push karna
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker buildx build --platform linux/amd64 --load \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      - name: Update Lambda Function Code
+      # The function itself is created by Terraform (module lambda,
+      # create_lambda = true). This step ships the new image and repoints
+      # the function at it. Wait for the new digest to be visible so
+      # update-function-code can't race an eventual-consistent ECR read.
+      - name: Update Lambda function code
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: my-lambda-app
+          ECR_REPOSITORY: image-processor-lambda
           IMAGE_TAG: ${{ github.sha }}
+          AWS_DEFAULT_REGION: us-east-1
         run: |
-          # ⚠️ Yahan apni lambda function ka exact naam likhein (e.g. image-service-lambda ya jo bhi console par hai)
           aws lambda update-function-code \
             --function-name image-processor-lambda \
-            --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            --query 'LastUpdateStatus' --output text
+
+      - name: Wait for the code update to apply
+        run: |
+          aws lambda wait function-updated --function-name image-processor-lambda
+          aws lambda get-function --function-name image-processor-lambda \
+            --query 'Configuration.[CodeSHA256, LastUpdateStatus, Version]' --output table
+
+      - name: Deployment summary
+        run: echo "Lambda image-processor-lambda updated to ${GITHUB_SHA} (+ latest)" >> $GITHUB_STEP_SUMMARY
